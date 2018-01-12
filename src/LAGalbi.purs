@@ -1,0 +1,115 @@
+module LAGalbi where
+
+import Prelude
+
+import Control.Monad.Except (Except, runExcept, throwError)
+import Data.Either (Either)
+import Data.Int (fromNumber)
+import Data.List.Types (NonEmptyList)
+import Data.Maybe (Maybe(..), maybe)
+import Data.Record.Builder (Builder)
+import Data.Record.Builder as Builder
+import Data.String (Pattern(Pattern), drop, indexOf, splitAt, stripPrefix)
+import Data.Tuple (Tuple)
+import Global (readInt)
+import Type.Prelude (class IsSymbol, Proxy(..), SProxy(..), reflectSymbol)
+import Type.Row (class RowLacks)
+
+parseUrl :: forall to xs
+   . ParseURLImpl xs () to
+  => Proxy xs
+  -> String
+  -> Either BadTimes (Record to)
+parseUrl p s = runExcept do
+  result <- parseURLImpl p s
+  pure $ Builder.build result.builder {}
+
+data BadTime
+  = SymbolMatchError String
+  | ParamParseError String
+derive instance badTimeEq :: Eq BadTime
+instance badTimeShow :: Show BadTime where
+  show (SymbolMatchError s) = "SymbolMatchError " <> s
+  show (ParamParseError s) = "ParamParseError " <> s
+
+type BadTimes = NonEmptyList BadTime
+
+-- | a URL Parameter argument, by the label that should be used in the params record
+-- | and type that this param should be parsed to.
+data Param (label :: Symbol) ty = Param
+
+-- | another type operator alias for Tuple /\ for familiarity convenience
+infixr 6 type Tuple as /
+
+-- | shorthand for SProxy
+type S = SProxy
+
+-- | Typeclass for reading from URL segments
+class ParseParam a where
+  parseParam :: String -> Except BadTimes a
+
+instance stringParseParam :: ParseParam String where
+  parseParam s = pure s
+
+instance intParseParam :: ParseParam Int where
+  parseParam s =
+    case fromNumber $ readInt 10 s of
+      Just a -> pure a
+      Nothing ->
+        throwError <<< pure <<< ParamParseError $
+          "could not parse " <> s <> " into integer"
+
+-- | Typeclass to parse a URL segment into a Record.Builder that extracts out parameters
+class ParseURLImpl xs (from :: # Type) (to :: # Type)
+  | xs -> from to where
+  parseURLImpl ::
+       Proxy xs
+    -> String
+    -> Except BadTimes
+         { builder :: Builder (Record from) (Record to)
+         , remaining :: String
+         }
+
+instance tupleParseURL ::
+  ( ParseURLImpl left from' to
+  , ParseURLImpl right from from'
+  ) => ParseURLImpl (left / right) from to where
+  parseURLImpl _ s = do
+    left <- parseURLImpl (Proxy :: Proxy left) s
+    right <- parseURLImpl (Proxy :: Proxy right) left.remaining
+    pure $ { builder: left.builder <<< right.builder, remaining: right.remaining }
+
+instance segmentParseURL ::
+  ( IsSymbol segment
+  ) => ParseURLImpl (SProxy segment) from from where
+  parseURLImpl _ s =
+    case stripPrefix (Pattern $ "/" <> segment) s of
+      Nothing ->
+        throwError <<< pure <<< SymbolMatchError $
+          "could not strip segment " <> segment <> " from path " <> s
+      Just remaining ->
+        pure { builder: id, remaining }
+    where
+      segment = reflectSymbol (SProxy :: SProxy segment)
+
+instance paramParseURL ::
+  ( IsSymbol label
+  , ParseParam ty
+  , RowLacks label from
+  , RowCons label ty from to
+  ) => ParseURLImpl (Param label ty) from to where
+  parseURLImpl _ s = do
+    split' <- maybe
+                (throwError <<< pure <<< ParamParseError $
+                   "could not handle url param segment " <> s)
+                pure
+                split
+    value <- parseParam split'.before
+    pure { builder: Builder.insert labelP value, remaining: split'.after}
+    where
+      labelP = SProxy :: SProxy label
+      label = reflectSymbol labelP
+      s' = drop 1 s
+      split = case indexOf (Pattern "/") s' of
+        Just idx -> splitAt idx s'
+        Nothing -> pure { before: s', after: "" }
