@@ -4,9 +4,10 @@ import Prelude
 
 import Control.Monad.Except (Except, runExcept, throwError)
 import Data.Either (Either)
-import Data.Int (fromNumber)
+import Data.Int (decimal, fromNumber, toStringAs)
 import Data.List.Types (NonEmptyList)
 import Data.Maybe (Maybe(..), maybe)
+import Data.Record (get)
 import Data.Record.Builder (Builder)
 import Data.Record.Builder as Builder
 import Data.String (Pattern(Pattern), drop, indexOf, splitAt, stripPrefix)
@@ -23,6 +24,13 @@ parseUrl :: forall to xs
 parseUrl p s = runExcept do
   result <- parseURLImpl p s
   pure $ Builder.build result.builder {}
+
+writeUrl :: forall row xs
+   . WriteURLImpl xs row
+  => Proxy xs
+  -> { | row }
+  -> String
+writeUrl = writeURLImpl
 
 data BadTime
   = SymbolMatchError String
@@ -113,3 +121,48 @@ instance paramParseURL ::
       split = case indexOf (Pattern "/") s' of
         Just idx -> splitAt idx s'
         Nothing -> pure { before: s', after: "" }
+
+-- | Typeclass for writing URL segments
+class WriteParam a where
+  writeParam :: a -> String
+
+instance stringWriteParam :: WriteParam String where
+  writeParam s = s
+
+instance intWriteParam :: WriteParam Int where
+  writeParam i = toStringAs decimal i
+
+-- | Typeclass to write URL segments from records for params
+class WriteURLImpl xs (row :: # Type)
+  | xs -> row where
+  writeURLImpl ::
+       Proxy xs
+    -> Record row
+    -> String
+
+instance tupleWriteURL ::
+  ( WriteURLImpl left row
+  , WriteURLImpl right row
+  ) => WriteURLImpl (left / right) row where
+  writeURLImpl _ r =
+    left <> right
+    where
+      left = writeURLImpl (Proxy :: Proxy left) r
+      right = writeURLImpl (Proxy :: Proxy right) r
+
+instance segmentWriteURL ::
+  ( IsSymbol segment
+  ) => WriteURLImpl (SProxy segment) row where
+  writeURLImpl _ _ =
+    "/" <> reflectSymbol (SProxy :: SProxy segment)
+
+instance paramWriteURL ::
+  ( IsSymbol label
+  , RowCons label ty trash row
+  , WriteParam ty
+  ) => WriteURLImpl (Param label ty) row where
+  writeURLImpl _ r =
+    "/" <> param
+    where
+      x = get (SProxy :: SProxy label) r
+      param = writeParam x

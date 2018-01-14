@@ -4,7 +4,7 @@ import Prelude
 
 import Control.Monad.Eff (Eff)
 import Data.Either (Either(..))
-import LAGalbi (type (/), Param, S, parseUrl)
+import LAGalbi (type (/), Param, S, parseUrl, writeUrl)
 import Test.Unit (failure, suite, test)
 import Test.Unit.Assert (assert)
 import Test.Unit.Main (runTest)
@@ -21,9 +21,12 @@ testUrl = "/hello/world/1/joe"
 main :: Eff _ Unit
 main = runTest do
   suite "LA Galbi" do
-    test "works properly" do
+    test "parseUrl works" do
       case parseUrl myRouteP testUrl of
         Left e -> failure $ "oops: " <> show e
         Right result ->
           assert "says hi joe #1" $
             "hi " <> result.name <> " #" <> show result.id == "hi joe #1"
+    test "writeUrl works" do
+      assert "writes out /hello/world/1/joe" $
+        writeUrl myRouteP { name: "joe", id: 1 } == "/hello/world/1/joe"
